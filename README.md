@@ -4,7 +4,7 @@
 
 * http://dynamicog.org/NNSactionDynamics/activePassiveGIT.html
 
-    + The sequence of steps taken in R to generate the results reported in the manuscript (R Markdown Worksheet)
+    + The sequence of steps taken in R to generate the results reported in the manuscript (R Markdown Notebook)
     
 ### Additional files
 
