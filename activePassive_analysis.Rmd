@@ -1,0 +1,321 @@
+---
+title: "The Action Dynamics of Native and Non-Native Speakers of English in Processing Active and Passive Sentences"
+author: "Nick Duran"
+date: 07/15/17
+output: html_document
+---
+
+# Analysis 1: Interaction Between Language Proficiency and Grammatical Construction
+
+In this analysis, we used linear mixed effects modeling to evaluate the fixed effect factors for grammatical structure (Active; coded as 0.5 vs. Passive; coded as -0.5) and language experience (Native; coded as 0.5 vs. Non-native; coded as -0.5) for each of the trajectory properties. We also generate a correlation matrix between trajectory properties and report descriptives.  
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list=ls())
+setwd('/Users/nduran/Dropbox (ASU)/ScottProject/activePassive/dataAnalysis2/')
+
+library(dtplyr)
+library(dplyr) # NEW - for data prep 
+library(reshape2) # for melting data, for plotting
+library(lme4) # mixed effects modeling
+library(multcomp) # to do multiple pairwise comparisons when have multiple levels to a categorical predictor
+library(MuMIn) # compute effect size (for mixed effects modeling)
+library(openxlsx) # new way to save to excel
+library(Hmisc)
+library(data.table) # easiest way to rename a bunch of variables
+library(pander)
+
+source("save_model.r")
+
+```
+
+## Preliminaries
+
+**Clean-up (dropping errant data):**
+
+```{r}
+combDat = read.delim("PROCESSED_SUPERNEW.txt", header = TRUE,sep='\t') ## data for non-native speakers
+
+## remove practice trials
+combDat = filter(combDat,condition != "practice") 
+
+## drop participants where more than 30% of trials are considered errors (74 total trials)
+badSubs = dplyr::summarize(group_by(combDat,subjectN,subjectOG,ability),
+                         count=(sum(error)/length(subjectN))*100)
+bad1 = filter(badSubs, count > 30)
+combDat2 = filter(combDat, !(subjectN %in% bad1$subjectN))
+
+## dropping participants based on visual inspection of trajectories that were highly unusual
+combDat3 = filter(combDat2, !(subjectOG %in% c(277,2005,2776,3472,2649,3090,678, 2957)))
+
+## drop all remaining trials with errors
+combDat4 = filter(combDat3, error != 1) 
+
+## generate clean data set - remove all but the declarative and passive types
+combDat5 = filter(combDat4,condition == "passive" | condition == "declarative")
+
+```
+
+**Recoding to make labels more intuitive:**
+
+```{r}
+
+## rename variables to be more intuitive
+setnames(combDat5, old = c('rt','initTime','DV_inmot','DV_velmax','DV_velmax_start','DV_dist','DV_xflp_tot','DV_AUC'), new = c('Overall Time','Latency Time','Motion Time','Velocity (Max)','Velocity (Onset)','Distance','X Flips','AUC'))
+
+## rename variables to be more intuitive; df1 to be used for generating correlations
+df1 <- within( combDat5, {
+    subject.id <- subjectN ## subject number
+    item.id <- stim ## item code
+    
+    ## Factor 1: Proficiency based on NS or NNS (2-levels; between-subject)
+    proficiency <- ifelse( ability==1,"NS",
+                    ifelse( ability==2,"NNS",NA ))
+    ## Factor 2: Constructions of either Passive vs. Active (2-levels; within-subject)
+    construction <- ifelse( condition=="declarative","Active",
+                    ifelse( condition=="passive","Passive",NA ))
+
+} )
+df1 <- dplyr::select(df1, subject.id,item.id,proficiency,construction,c(16:21,23:24)) 
+
+## rename variables to be more intuitive; df2 to be used for descriptives/statistical analyses
+df2 = melt(df1,id=1:4) 
+df2 <- within( df2, {
+    dependent.variable <- value ## action dynamic response variables
+    traj.properties <- variable
+} )
+
+```
+
+**Descriptives of main variables:**
+
+```{r}
+summt = dplyr::summarize(group_by(df2,proficiency,construction,traj.properties),
+                         count=length(dependent.variable),
+                         mean=mean(dependent.variable),
+                         se=sd(dependent.variable)/sqrt(length(dependent.variable)),
+                         sdev=sd(dependent.variable))
+# write.xlsx(summt,"descriptivesActive.xlsx")
+# pander(summt[c(1:6)])
+
+```
+
+```{r}
+
+## REVIEWER REQUEST - calculating confidence intervals from a normal distribution
+# http://onlinestatbook.com/2/estimation/difference_means.html
+
+makeList = c()
+DVS = c('Overall Time','Latency Time','Motion Time','Velocity (Max)','Velocity (Onset)','Distance','X Flips','AUC')
+getNS = CIfunc(DVS,summt,"NS")
+getNNS = CIfunc(DVS,summt,"NNS")
+makeList[[1]] = getNS
+makeList[[2]] = getNNS
+names(makeList) <- c("NS", "NNS")
+# write.xlsx(makeList,"getCI_2.xlsx",rowNames=TRUE)
+# makeList
+```
+
+## Correlations 
+
+To examine the extent to which measures are separable or index shared aspects of processing
+
+```{r}
+rcorMouse3 = rcorr(as.matrix(df1[,c(5:12)], type="pearson"))
+# rcorMouse3[1]
+# write.xlsx(rcorMouse3[1],"mouseCorrelations.xlsx")
+```
+
+## Statistical Models
+
+**Contrast structure:**
+
+```{r}
+df3 <- within( df2, {
+    ##// actives compared to passives
+    construction.c <- ifelse( construction=="Active", 1/2, ifelse( construction=="Passive", -1/2, NA ) ) 
+    ##// NS compared to NNS
+    proficiency.c <- ifelse( proficiency=="NS", 1/2, ifelse( proficiency=="NNS", -1/2, NA ) )
+} )
+```
+
+**Run models (except x-flips):**
+
+```{r}
+
+model.summary = c()
+effect.size = c()
+model.interaction = c()
+model.contrasts = c()
+i = 1
+
+DVS = c('Overall Time','Latency Time','Motion Time','Velocity (Max)','Velocity (Onset)','Distance','AUC')
+# DVS = c('X Flips')
+
+for (vari in DVS) {
+    df3.stats = filter(df3, variable == vari )
+    
+    # **Run Full Model:**
+    omnibus.lmer <- lmer( dependent.variable ~ construction.c * proficiency.c
+            + (1 + construction.c | subject.id) 
+            + (0 + construction.c | item.id),
+            control = lmerControl(optimizer="bobyqa"), data=df3.stats, REML=FALSE, na.action = na.exclude)
+
+    ## **Get effect size:**
+    getES = runEffectSize(omnibus.lmer, vari)
+    effect.size = cbind(effect.size,getES)
+    
+    ## **Test for relevant two-way interaction:**
+    twoway.omnibus.lmer = update(omnibus.lmer,.~.-construction.c:proficiency.c)
+    model.interaction[[i]] = modComp(omnibus.lmer,twoway.omnibus.lmer,vari)
+
+    # **Interpreting the omnibus coefficients:**
+    planCont = rbind(
+        ## main effect 1
+        "AvP" = c(0, 1, 0, 0),
+        ## main effect 2
+        "NSvNNS" = c(0, 0, 1, 0),
+        ## 2:way interaction
+        "construction:proficiency" = c(0, 0, 0, 1))
+    model.contrasts[[i]] = runContrasts(omnibus.lmer, planCont, vari)
+    i = i + 1    
+    
+}    
+
+## run follow-up post-hoc analysis of the interaction involving AUC
+
+NS.only = filter(df3, proficiency == "NS" )
+lmer.NS <- lmer( dependent.variable ~ construction.c
+                + (1 + construction.c | subject.id)
+                + (0 + construction.c | item.id),
+                control = lmerControl(optimizer="bobyqa"), data=NS.only, REML=FALSE, na.action = na.exclude,subset=variable=="AUC")
+# summary(lmer.NS)
+coefs = data.frame(summary(lmer.NS)$coef)
+coefs$p = 2*(1-pnorm(abs(coefs$t.value)))   
+
+NNS.only = filter(df3, proficiency == "NNS" )
+lmer.NNS <- lmer( dependent.variable ~ construction.c
+                + (1 + construction.c | subject.id)
+                + (0 + construction.c | item.id),
+                control = lmerControl(optimizer="bobyqa"), data=NNS.only, REML=FALSE, na.action = na.exclude,subset=variable=="AUC")
+# summary(lmer.NNS)
+coefs = data.frame(summary(lmer.NNS)$coef)
+coefs$p = 2*(1-pnorm(abs(coefs$t.value)))   
+
+# write.xlsx(model.summary,"modelResults1.xlsx",rowNames=TRUE)
+# write.xlsx(effect.size,"modelResults_effectsizes.xlsx",rowNames=TRUE)
+# write.xlsx(model.interaction,"modelResults3.xlsx",rowNames=TRUE)
+# write.xlsx(model.contrasts,"modelResults_6DVs.xlsx",rowNames=TRUE)
+
+```
+
+**Run models (direction change):**
+
+```{r}
+
+omnibus.lmer.DC <- glmer( dependent.variable ~ construction.c * proficiency.c 
+                          + (1 + construction.c | subject.id)
+                          + (0 + construction.c | item.id),
+                          data=df3, family = poisson(link = "log"), na.action = na.exclude, 
+                          subset=variable=="X Flips")
+
+contrasts.DC = runContrasts(omnibus.lmer.DC, planCont, "X Flips")    
+# contrasts.DC
+# write.xlsx(contrasts.DC,"modelResults_XFLIPS.xlsx",rowNames=TRUE)
+
+```
+
+# Analysis 2: Non-native speakers with proficiency now based on TOEFL scores
+
+In this analysis we examine non-native speakers only, with fixed effects for grammatical structure and language proficiency, coded as a mean-centered continuous variable of non-native speakers’ TOEFL scores.
+
+## Preliminaries
+
+**Recoding:**
+
+```{r}
+
+## add NNS TOEFL scores - add to "combDat" generated in Analysis 1
+toef = read.delim("TOEFLSCORES.csv", header = TRUE,sep=',') 
+toef$subjectOG = toef$Participant
+toef2 = dplyr::select(toef,subjectOG,TOEFL.scores)
+
+combDat6 = merge(combDat5, toef2, by=c("subjectOG"), all.x=TRUE) # NA's match, drop all NNS without TOEFL score
+
+df1 <- dplyr::select(combDat6, c(1:3,7,5,26,16:21,23:24)) 
+df2 = melt(df1,id=1:6) 
+
+## rename variables to be more intuitive
+df3 <- within( df2, {
+    dependent.variable <- value ## action dynamic response variables
+    traj.properties <- variable    
+    
+    subject.id <- subjectN ## subject number
+    item.id <- stim ## item code
+    
+    ## Factor 1: Constructions of either Passive vs. Active (2-levels; within-subject)
+    construction <- ifelse( condition=="declarative","Active",
+                    ifelse( condition=="passive","Passive",NA ))
+
+} )
+
+## for TOEFL SCORES in models
+center_scale = function(x) {
+    scale(x, scale = FALSE)
+}
+```
+
+**Contrast structure:**
+
+```{r}
+df4 <- within( df3, {
+    ##// actives compared to passives
+    construction.c <- ifelse( construction=="Active", 1/2, ifelse( construction=="Passive", -1/2, NA ) ) 
+} )
+```
+
+**Run models**
+
+```{r}
+effect.size = c()
+model.contrasts = c()
+i = 1
+
+DVS = c('Overall Time','Latency Time','Motion Time','Velocity (Max)','Velocity (Onset)','Distance','X Flips','AUC')
+
+for (vari in DVS) {
+    df3.stats = filter(df4, variable == vari & ability==2)
+
+    # **Run Full Model:**
+    omnibus.lmer <- lmer( dependent.variable ~ construction.c*center_scale(TOEFL.scores)
+                          + (1 + construction.c | subject.id)
+                          + (0 + construction.c | item.id),
+                          control = lmerControl(optimizer="bobyqa"), data=df3.stats, REML=FALSE, na.action = na.exclude)
+
+    ## **Get effect size:**
+    getES = runEffectSize(omnibus.lmer, vari)
+    effect.size = cbind(effect.size,getES)
+
+    # **Interpreting the omnibus coefficients:**
+    planCont = rbind(
+        ## main effect 1
+        "AvP" = c(0, 1, 0, 0),
+        ## main effect 2
+        "TOEFL" = c(0, 0, 1, 0),
+        ## 2:way interaction
+        "Interaction" = c(0, 0, 0, 1))
+    model.contrasts[[i]] = runContrasts(omnibus.lmer, planCont, vari)
+    i = i + 1
+
+}
+
+names(model.contrasts) <- c('Overall Time','Latency Time','Motion Time','Velocity (Max)','Velocity (Onset)','Distance','X Flips','AUC')
+# model.contrasts
+# write.xlsx(model.contrasts,"modelResults_TOEFL.xlsx",rowNames=TRUE)
+```
+
+
+
+
