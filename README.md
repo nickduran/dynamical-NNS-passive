@@ -1,18 +1,23 @@
 # Revision  
 
-### Statistical analysis with results as reported in the manuscript 
+### Raw data
 
-* http://dynamicog.org/NNSactionDynamics/activePassiveGIT.html
+    + all_mt_files
 
-    + The sequence of steps taken in R to generate the results reported in the manuscript (R Markdown Notebook)
-    
+### How to convert raw data into form for Matlab analysis
+
+    + masterPrepPassives.ipynb
+
+### Matlab analysis for generating trajectory-property DVs and output from analysis
+
+    + extractDVs.m
+
+### R code for running analysis (and data cleaning) reported in the manuscript
+
+    + activePassive_analysis.Rmd
+
 ### Additional files
 
-* trajAngDVsScottNNS_NEW.txt
-* trajAngDVsScottNS_NEW.txt
-
-    + Complete datasets, separated by NS and NNS data
-    
 * TOEFLSCORES.csv
 
     + TOEFL scores for NNS participants
